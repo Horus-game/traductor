@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Traductor en vivo por cámara</title>
+
+<!-- ============================================================
+  CONFIGURACIÓN NECESARIA ANTES DE DESPLEGAR
+  ============================================================
+  1) Creá un proyecto gratis en https://console.firebase.google.com
+  2) Activá "Realtime Database" (modo de prueba está bien para empezar)
+  3) Copiá tu firebaseConfig y pegalo abajo en FIREBASE_CONFIG
+  4) Subí este archivo a un repo de GitHub y activá GitHub Pages
+     (debe servirse por HTTPS para que el navegador permita la cámara)
+  5) Abrí la app en los dos dispositivos. En cada uno vas a elegir:
+       - Una "clave de sala" (la misma en ambos, ej: "sala1")
+       - Un rol: Emisor (celular con cámara) o Receptor (tablet)
+     Podés además compartir el link directo con parámetros:
+       ?room=sala1&view=control   -> abre directo como Emisor de "sala1"
+       ?room=sala1&view=display   -> abre directo como Receptor de "sala1"
+  ============================================================ -->
+
+<style>
+  :root{
+    --bg-dark:#0b0d12;
+    --panel:#151922;
+    --panel-2:#1c212c;
+    --accent:#3ea6ff;
+    --accent-2:#37e08c;
+    --text:#e8ecf1;
+    --text-dim:#8b93a1;
+    --danger:#ff5f5f;
+    --border:#2a3140;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0;padding:0;height:100%;
+    background:var(--bg-dark);
+    color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    overscroll-behavior:none;
+  }
+  button{font-family:inherit;border:none;border-radius:12px;cursor:pointer;font-weight:600;transition:transform .1s, opacity .2s;}
+  button:active{transform:scale(.97);}
+  button:disabled{opacity:.5;cursor:not-allowed;}
+  select,input{font-family:inherit;}
+
+  /* ---------------- PANTALLA DE CONFIGURACIÓN (sala + rol) ---------------- */
+  #setupView{
+    height:100vh;height:100dvh;
+    display:flex;align-items:center;justify-content:center;
+    padding:24px;
+  }
+  .setup-card{
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:16px;
+    padding:28px 24px;
+    max-width:380px;width:100%;
+  }
+  .setup-card h1{
+    font-size:19px;margin:0 0 6px;
+  }
+  .setup-card p{
+    font-size:13px;color:var(--text-dim);margin:0 0 20px;line-height:1.5;
+  }
+  .field{margin-bottom:16px;}
+  .field label{
+    display:block;font-size:12px;color:var(--text-dim);
+    text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;
+  }
+  .field input, .field select{
+    width:100%;padding:12px;border-radius:10px;
+    background:var(--panel-2);border:1px solid var(--border);
+    color:var(--text);font-size:15px;
+  }
+  .role-row{display:flex;gap:10px;margin-bottom:22px;}
+  .role-btn{
+    flex:1;padding:16px 10px;text-align:center;
+    background:var(--panel-2);border:1px solid var(--border);color:var(--text);
+    font-size:14px;border-radius:12px;
+  }
+  .role-btn .emoji{font-size:22px;display:block;margin-bottom:4px;}
+  .role-btn.selected{
+    border-color:var(--accent);
+    background:rgba(62,166,255,.12);
+    color:var(--accent);
+  }
+  #enterBtn{
+    width:100%;padding:15px;font-size:15px;
+    background:linear-gradient(135deg,var(--accent),#1f7fd8);color:#fff;
+  }
+  .setup-note{
+    margin-top:14px;font-size:11.5px;color:var(--text-dim);text-align:center;
+  }
+
+  /* ---------------- CONTROL VIEW (celular / EMISOR) ---------------- */
+  #controlView{display:none;flex-direction:column;height:100vh;height:100dvh;}
+  .topbar{
+    padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--border);
+    display:flex;align-items:center;justify-content:space-between;flex-shrink:0;gap:8px;
+  }
+  .topbar h1{font-size:14px;margin:0;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .status-dot{width:9px;height:9px;border-radius:50%;background:var(--danger);display:inline-block;margin-right:6px;transition:background .3s;flex-shrink:0;}
+  .status-dot.ok{background:var(--accent-2);}
+  .status-row{font-size:12px;color:var(--text-dim);display:flex;align-items:center;flex-shrink:0;}
+
+  .camera-wrap{position:relative;flex:1;min-height:0;background:#000;overflow:hidden;}
+  #video{width:100%;height:100%;object-fit:cover;display:block;}
+  .scan-frame{
+    position:absolute;left:6%;right:6%;top:22%;bottom:38%;
+    border:2px solid rgba(62,166,255,.85);border-radius:12px;
+    box-shadow:0 0 0 2000px rgba(0,0,0,.35);pointer-events:none;
+    transition:border-color .25s;
+  }
+  .scan-frame.reading{border-color:rgba(55,224,140,.9);}
+  .scan-hint{
+    position:absolute;top:calc(22% - 26px);left:0;right:0;text-align:center;
+    color:#fff;font-size:12.5px;text-shadow:0 1px 3px rgba(0,0,0,.8);pointer-events:none;
+  }
+  .live-subtitle{
+    position:absolute;left:4%;right:4%;bottom:6%;
+    background:rgba(0,0,0,.55);
+    border-radius:10px;
+    padding:10px 14px;
+    color:#fff;
+    font-size:15px;
+    font-weight:600;
+    text-align:center;
+    line-height:1.4;
+    pointer-events:none;
+    max-height:34%;
+    overflow-y:auto;
+    display:none;
+  }
+  .live-subtitle.show{display:block;}
+
+  .controls{
+    flex-shrink:0;background:var(--panel);border-top:1px solid var(--border);
+    padding:12px 14px 14px;display:flex;flex-direction:column;gap:9px;
+  }
+  .lang-row{display:flex;gap:8px;}
+  .lang-field{flex:1;}
+  .lang-field label{font-size:10.5px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:3px;}
+  .lang-field select{
+    width:100%;padding:9px;border-radius:8px;background:var(--panel-2);
+    border:1px solid var(--border);color:var(--text);font-size:13px;
+  }
+
+  .result-box{
+    background:var(--panel-2);border:1px solid var(--border);border-radius:10px;
+    padding:10px 12px;max-height:100px;overflow-y:auto;
+  }
+  .result-box .label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-dim);margin-bottom:4px;}
+  .result-box .src{font-size:14px;color:var(--text-dim);margin-bottom:6px;word-break:break-word;}
+  .result-box .out{font-size:17px;font-weight:600;color:var(--accent-2);word-break:break-word;}
+
+  .btn-row{display:flex;gap:10px;}
+  #liveBtn{flex:1;padding:16px;font-size:15px;background:linear-gradient(135deg,var(--accent),#1f7fd8);color:#fff;}
+  #liveBtn.active{background:linear-gradient(135deg,#e05a5a,#b53434);}
+
+  .settings-row{display:flex;align-items:center;justify-content:space-between;font-size:11.5px;color:var(--text-dim);}
+  .settings-row select{background:var(--panel-2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 6px;font-size:12px;}
+
+  .progress-line{height:3px;width:100%;background:var(--panel-2);border-radius:2px;overflow:hidden;}
+  .progress-line .bar{height:100%;width:0%;background:var(--accent);transition:width .2s;}
+
+  /* ---------------- DISPLAY VIEW (tablet / RECEPTOR) ---------------- */
+  #displayView{
+    display:none;height:100vh;height:100dvh;width:100vw;
+    background:#f4f1ea;color:#171a1f;
+    align-items:center;justify-content:center;padding:5vw;text-align:center;
+  }
+  #displayText{
+    font-size:clamp(28px, 6.2vw, 92px);font-weight:700;line-height:1.35;
+    max-width:1400px;word-break:keep-all;overflow-wrap:break-word;
+  }
+  #displayEmpty{font-size:clamp(18px,3vw,28px);color:#8a8478;font-weight:500;}
+  #displayMeta{position:fixed;bottom:18px;left:0;right:0;text-align:center;font-size:13px;color:#a39c8c;letter-spacing:.03em;}
+
+  ::-webkit-scrollbar{width:6px;}
+  ::-webkit-scrollbar-thumb{background:#3a4252;border-radius:3px;}
+</style>
+</head>
+<body>
+
+<!-- ======================= PANTALLA DE CONFIGURACIÓN ======================= -->
+<div id="setupView">
+  <div class="setup-card">
+    <h1>🌐 Traductor en vivo por cámara</h1>
+    <p>Elegí una clave de sala (la misma en los dos dispositivos) y qué rol cumple este equipo.</p>
+
+    <div class="field">
+      <label>Clave de sala</label>
+      <input id="roomInput" type="text" placeholder="ej: sala1, oficina, mesa5" autocomplete="off" autocapitalize="off">
+    </div>
+
+    <div class="role-row">
+      <div class="role-btn" id="roleControlBtn" data-role="control">
+        <span class="emoji">📷</span>Emisor (cámara)
+      </div>
+      <div class="role-btn" id="roleDisplayBtn" data-role="display">
+        <span class="emoji">📺</span>Receptor (pantalla)
+      </div>
+    </div>
+
+    <button id="enterBtn" disabled>Entrar</button>
+    <div class="setup-note">El texto detectado se traduce automáticamente y se envía solo dentro de tu sala.</div>
+  </div>
+</div>
+
+<!-- ======================= VISTA DE CONTROL (EMISOR) ======================= -->
+<div id="controlView">
+  <div class="topbar">
+    <h1 id="roomLabel">📷 Sala</h1>
+    <div class="status-row">
+      <span class="status-dot" id="dbStatusDot"></span>
+      <span id="dbStatusText">Conectando…</span>
+    </div>
+  </div>
+
+  <div class="camera-wrap">
+    <video id="video" autoplay playsinline muted></video>
+    <div class="scan-frame" id="scanFrame"></div>
+    <div class="scan-hint" id="scanHint">Encuadrá el texto aquí dentro y tocá "Iniciar"</div>
+    <div class="live-subtitle" id="liveSubtitle"></div>
+  </div>
+
+  <div class="controls">
+    <div class="progress-line"><div class="bar" id="progressBar"></div></div>
+
+    <div class="lang-row">
+      <div class="lang-field">
+        <label>Escritura a leer (OCR)</label>
+        <select id="ocrLangSelect">
+          <option value="jpn">Japonés</option>
+          <option value="eng">Inglés</option>
+          <option value="chi_sim">Chino simplificado</option>
+          <option value="chi_tra">Chino tradicional</option>
+          <option value="kor">Coreano</option>
+          <option value="jpn+eng">Japonés + Inglés</option>
+          <option value="fra">Francés</option>
+          <option value="deu">Alemán</option>
+          <option value="ita">Italiano</option>
+          <option value="por">Portugués</option>
+          <option value="rus">Ruso</option>
+        </select>
+      </div>
+      <div class="lang-field">
+        <label>Traducir a</label>
+        <select id="targetLangSelect">
+          <option value="es" selected>Español</option>
+          <option value="en">Inglés</option>
+          <option value="pt">Portugués</option>
+          <option value="fr">Francés</option>
+          <option value="de">Alemán</option>
+          <option value="it">Italiano</option>
+          <option value="ja">Japonés</option>
+          <option value="ko">Coreano</option>
+          <option value="zh-CN">Chino</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="result-box">
+      <div class="label">Último resultado</div>
+      <div class="src" id="lastSrc">—</div>
+      <div class="out" id="lastOut">Esperando captura…</div>
+    </div>
+
+    <div class="settings-row">
+      <span>Velocidad de lectura</span>
+      <select id="intervalSelect">
+        <option value="1200">Muy rápida (1.2s)</option>
+        <option value="2000" selected>Normal (2s)</option>
+        <option value="3500">Ahorro de batería (3.5s)</option>
+      </select>
+    </div>
+
+    <div class="btn-row">
+      <button id="liveBtn">▶️ Iniciar escaneo en vivo</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= VISTA RECEPTORA (TABLET) ======================= -->
+<div id="displayView">
+  <div id="displayText" style="display:none;"></div>
+  <div id="displayEmpty">Esperando texto desde el emisor…</div>
+  <div id="displayMeta" id="displayMetaText">Traducción en vivo · pantalla receptora</div>
+</div>
+
+<!-- ======================= LIBRERÍAS ======================= -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+<script>
+/* ============================================================
+   1) CONFIGURACIÓN DE FIREBASE — REEMPLAZAR CON TUS DATOS
+   ============================================================ */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCpcgXEvPdrNm85y_gmmCoKNH_C7X51S6Q",
+  authDomain: "traductor-66d6c.firebaseapp.com",
+  databaseURL: "https://traductor-66d6c-default-rtdb.firebaseio.com",
+  projectId: "traductor-66d6c",
+  storageBucket: "traductor-66d6c.firebasestorage.app",
+  messagingSenderId: "1070161949969",
+  appId: "1:1070161949969:web:813433c9ed519ee66ec8b0"
+};
+
+firebase.initializeApp(FIREBASE_CONFIG);
+const db = firebase.database();
+
+/* ============================================================
+   2) PANTALLA DE CONFIGURACIÓN: clave de sala + rol
+   ============================================================ */
+const params = new URLSearchParams(window.location.search);
+const setupView = document.getElementById("setupView");
+const roomInput = document.getElementById("roomInput");
+const roleControlBtn = document.getElementById("roleControlBtn");
+const roleDisplayBtn = document.getElementById("roleDisplayBtn");
+const enterBtn = document.getElementById("enterBtn");
+
+let selectedRole = null;
+
+// Precarga desde la URL o desde lo último usado en este dispositivo
+const urlRoom = params.get("room");
+const urlView = params.get("view"); // "control" | "display"
+roomInput.value = urlRoom || localStorage.getItem("lastRoom") || "";
+if (urlView === "control" || urlView === "display") {
+  selectedRole = urlView;
+}
+
+function refreshRoleUI() {
+  roleControlBtn.classList.toggle("selected", selectedRole === "control");
+  roleDisplayBtn.classList.toggle("selected", selectedRole === "display");
+  checkReady();
+}
+function checkReady() {
+  enterBtn.disabled = !(roomInput.value.trim().length > 0 && selectedRole);
+}
+roleControlBtn.addEventListener("click", () => { selectedRole = "control"; refreshRoleUI(); });
+roleDisplayBtn.addEventListener("click", () => { selectedRole = "display"; refreshRoleUI(); });
+roomInput.addEventListener("input", checkReady);
+refreshRoleUI();
+
+enterBtn.addEventListener("click", () => {
+  const room = sanitizeRoom(roomInput.value);
+  if (!room || !selectedRole) return;
+  localStorage.setItem("lastRoom", room);
+  setupView.style.display = "none";
+  if (selectedRole === "control") {
+    initControlView(room);
+  } else {
+    initDisplayView(room);
+  }
+});
+
+// Si vino todo por URL (room + view válidos), entra automáticamente
+if (urlRoom && (urlView === "control" || urlView === "display")) {
+  const room = sanitizeRoom(urlRoom);
+  if (room) {
+    localStorage.setItem("lastRoom", room);
+    setupView.style.display = "none";
+    if (urlView === "control") initControlView(room);
+    else initDisplayView(room);
+  }
+}
+
+function sanitizeRoom(raw) {
+  // Solo caracteres seguros como clave de nodo en Firebase
+  return raw.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 40);
+}
+
+function dbPathFor(room) {
+  return "rooms/" + room + "/current";
+}
+
+/* ============================================================
+   3) VISTA RECEPTORA (TABLET)
+   ============================================================ */
+function initDisplayView(room) {
+  document.getElementById("displayView").style.display = "flex";
+  const textEl = document.getElementById("displayText");
+  const emptyEl = document.getElementById("displayEmpty");
+  const metaEl = document.getElementById("displayMetaText");
+  metaEl.textContent = "Traducción en vivo · sala: " + room;
+
+  db.ref(dbPathFor(room)).on("value", (snap) => {
+    const data = snap.val();
+    if (data && data.translated && data.translated.trim().length > 0) {
+      textEl.textContent = data.translated.trim();
+      textEl.style.display = "block";
+      emptyEl.style.display = "none";
+    } else {
+      textEl.style.display = "none";
+      emptyEl.style.display = "block";
+    }
+  }, () => {
+    emptyEl.textContent = "Error de conexión con la base de datos.";
+  });
+}
+
+/* ============================================================
+   4) VISTA DE CONTROL (EMISOR)
+   ============================================================ */
+function initControlView(room) {
+  document.getElementById("controlView").style.display = "flex";
+  document.getElementById("roomLabel").textContent = "📷 Sala: " + room;
+
+  const video = document.getElementById("video");
+  const liveBtn = document.getElementById("liveBtn");
+  const intervalSelect = document.getElementById("intervalSelect");
+  const ocrLangSelect = document.getElementById("ocrLangSelect");
+  const targetLangSelect = document.getElementById("targetLangSelect");
+  const progressBar = document.getElementById("progressBar");
+  const lastSrc = document.getElementById("lastSrc");
+  const lastOut = document.getElementById("lastOut");
+  const dbStatusDot = document.getElementById("dbStatusDot");
+  const dbStatusText = document.getElementById("dbStatusText");
+  const scanFrame = document.getElementById("scanFrame");
+  const scanHint = document.getElementById("scanHint");
+  const liveSubtitle = document.getElementById("liveSubtitle");
+
+  // Recordar últimas preferencias de idioma en este dispositivo
+  ocrLangSelect.value = localStorage.getItem("ocrLang") || "jpn";
+  targetLangSelect.value = localStorage.getItem("targetLang") || "es";
+  ocrLangSelect.addEventListener("change", () => localStorage.setItem("ocrLang", ocrLangSelect.value));
+  targetLangSelect.addEventListener("change", () => localStorage.setItem("targetLang", targetLangSelect.value));
+
+  let stream = null;
+  let ocrWorker = null;
+  let ocrWorkerLang = null;
+  let isBusy = false;
+  let liveTimer = null;
+  let liveOn = false;
+  let lastSentText = "";        // para no reescribir Firebase si el texto no cambió
+  let firebaseReady = false;
+
+  // Detecta configuración de Firebase sin completar (causa más común de "Sin conexión")
+  const configLooksPlaceholder = Object.values(FIREBASE_CONFIG).some(v => String(v).startsWith("TU_"));
+  if (configLooksPlaceholder) {
+    dbStatusText.textContent = "Falta configurar Firebase";
+    lastOut.textContent = "⚠️ Reemplazá FIREBASE_CONFIG en el código con los datos reales de tu proyecto de Firebase (ver comentario al inicio del archivo).";
+  }
+
+  db.ref(".info/connected").on("value", (snap) => {
+    firebaseReady = snap.val() === true;
+    if (firebaseReady) {
+      dbStatusDot.classList.add("ok");
+      dbStatusText.textContent = "Conectado";
+    } else {
+      dbStatusDot.classList.remove("ok");
+      dbStatusText.textContent = configLooksPlaceholder ? "Falta configurar Firebase" : "Sin conexión";
+    }
+  }, (err) => {
+    dbStatusText.textContent = "Error Firebase: " + err.message;
+  });
+
+  async function startCamera() {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      video.srcObject = stream;
+    } catch (err) {
+      lastOut.textContent = "No se pudo acceder a la cámara: " + err.message;
+    }
+  }
+  startCamera();
+
+  // Crea (o recrea, si cambió el idioma de OCR) el worker de Tesseract
+  async function getWorker(lang) {
+    if (ocrWorker && ocrWorkerLang === lang) return ocrWorker;
+    if (ocrWorker) await ocrWorker.terminate();
+    ocrWorker = await Tesseract.createWorker(lang, 1, {
+      logger: (m) => {
+        if (m.status === "recognizing text") {
+          progressBar.style.width = Math.round(m.progress * 100) + "%";
+        }
+      }
+    });
+    ocrWorkerLang = lang;
+    return ocrWorker;
+  }
+
+  function cleanText(raw) {
+    return raw.replace(/[\n\r]+/g, " ").replace(/\s{2,}/g, " ").trim();
+  }
+
+  // Traducción con detección automática de idioma de origen (sl=auto)
+  // usando el endpoint público de Google Translate (sin necesidad de API key).
+  async function autoTranslate(text, targetLang) {
+    const url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl="
+      + encodeURIComponent(targetLang) + "&dt=t&q=" + encodeURIComponent(text);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("Fallo de traducción");
+    const json = await res.json();
+    // json[0] es una lista de segmentos [traducido, original, ...]
+    const translated = (json[0] || []).map(seg => seg[0]).join("");
+    const detectedLang = json[2] || "?";
+    return { translated: cleanText(translated), detectedLang };
+  }
+
+  function captureFrame() {
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  }
+
+  // Un "tick" del escaneo en vivo: lee el frame actual, y solo si el texto
+  // detectado CAMBIÓ respecto al último enviado, traduce y actualiza Firebase.
+  // Así el texto en la tablet queda estático mientras no haya nada nuevo real.
+  async function liveTick() {
+    if (isBusy || !video.videoWidth) return;
+    isBusy = true;
+    scanFrame.classList.add("reading");
+    progressBar.style.width = "0%";
+
+    try {
+      const canvas = captureFrame();
+      const worker = await getWorker(ocrLangSelect.value);
+      const { data } = await worker.recognize(canvas);
+      const srcRaw = cleanText(data.text || "");
+
+      if (!srcRaw) {
+        // No hay texto legible en este frame: no se toca lo último enviado.
+        return;
+      }
+
+      if (srcRaw === lastSentText) {
+        // Mismo texto que ya está mostrando el receptor: no reenviar.
+        return;
+      }
+
+      lastSrc.textContent = srcRaw;
+      lastOut.textContent = "Traduciendo…";
+
+      const targetLang = targetLangSelect.value;
+      const { translated, detectedLang } = await autoTranslate(srcRaw, targetLang);
+      lastOut.textContent = translated || "(sin traducción)";
+
+      liveSubtitle.textContent = translated || srcRaw;
+      liveSubtitle.classList.add("show");
+
+      lastSentText = srcRaw;
+
+      if (firebaseReady) {
+        await db.ref(dbPathFor(room)).set({
+          original: srcRaw,
+          translated: translated,
+          detectedLang: detectedLang,
+          targetLang: targetLang,
+          timestamp: Date.now()
+        });
+      }
+
+    } catch (err) {
+      lastOut.textContent = "Error: " + err.message;
+    } finally {
+      progressBar.style.width = "0%";
+      isBusy = false;
+      scanFrame.classList.remove("reading");
+    }
+  }
+
+  function startLive() {
+    liveOn = true;
+    liveBtn.classList.add("active");
+    liveBtn.textContent = "⏹️ Detener escaneo";
+    scanHint.textContent = "Leyendo en vivo…";
+    lastSentText = ""; // fuerza a leer de nuevo al reiniciar
+    const ms = parseInt(intervalSelect.value, 10);
+    liveTick();
+    liveTimer = setInterval(liveTick, ms);
+  }
+  function stopLive() {
+    liveOn = false;
+    liveBtn.classList.remove("active");
+    liveBtn.textContent = "▶️ Iniciar escaneo en vivo";
+    scanHint.textContent = "Encuadrá el texto aquí dentro y tocá \"Iniciar\"";
+    liveSubtitle.classList.remove("show");
+    clearInterval(liveTimer);
+  }
+  liveBtn.addEventListener("click", () => { liveOn ? stopLive() : startLive(); });
+  intervalSelect.addEventListener("change", () => { if (liveOn) { stopLive(); startLive(); } });
+}
+</script>
+</body>
+</html>
